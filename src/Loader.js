@@ -1,25 +1,20 @@
 
 /**
- * Загрузчик скриптов и стилей
+ * Загрузчик реализован по мотивам статьи http://habrahabr.ru/post/182310/
+ * В статье так же описаны сложности, которые могут возникнуть при загрузке скриптов
  * ---------------------------------------------------------------------------------
  **/
 (function (root) {
 
-    var src;
-    var script;
-    var pendingScripts = [];
-    var firstScript = document.scripts[0];
-
-
     /**
      * Массив для  перечисления загружаемых скриптов
      **/
-    var scripts = [];
-
-    /**
-     * Массив для  перечисления загружаемых скриптов
-     **/
-    var styles = [];
+    var scriptsQueue = [],
+        pendingScripts = [],
+        firstScript = document.scripts[0],
+        requestedScripts = {}, // {"src.js": true}
+        handlersQueue = [],//[{src1.js: true,.. length: 3, }, ...]
+        src, script;
 
     /**
      * Счетчик загруженных скриптов.
@@ -29,25 +24,11 @@
     var countOfLoad = 0;
 
     /**
-     * Счетчик загруженных стилей.
-     * При подключении стилей на страницу инкрементируется.
-     * При отработке onload-обработчика декрементируется
-     **/
-    //var countOfLoadStyle = 0;
-
-    /**
      * Состояние загрузки скриптов.
      * false - не загружены или еще небыли предоставлены для загрузки
      * true - скрипты загружены
      **/
     var loadState = false;
-
-    /**
-     * Состояние загрузки стилей.
-     * false - не загружены или еще небыли предоставлены для загрузки
-     * true - скрипты загружены
-     **/
-    //var loadStyleState = false;
 
     /**
      * Метод вызывается при загрузке заданного списка скриптов.
@@ -72,7 +53,15 @@
 
     function startLoad() {
         // loop through our script urls
-        while (src = scripts.shift()) {
+        while (src = scriptsQueue.shift()) {
+
+            if(requestedScripts[src] == 'ready'){
+                onLoadHandler(src);
+                continue;
+            }else if(requestedScripts[src] == 'requested'){
+                continue;
+            }
+
             if ('async' in firstScript) { // modern browsers
                 script = document.createElement('script');
                 script.onload = onLoadHandler;
@@ -99,32 +88,64 @@
                 document.write('<script src="' + src + '" defer></'+'script>');
                 countOfLoad++;
             }
+
+            requestedScripts[src] = 'requested';
         }
-    }
-
-    function startLoadStyles () {
-        var style;
-
-        while (src = styles.shift()) {
-            style = document.createElement('link');
-            style.onload = onLoadHandler;
-            style.rel = "stylesheet";
-            style.href = src;
-            document.head.appendChild(style);
-            countOfLoad++;
-        }
-
     }
 
     /**
      * Обработчик загрузки отдельного скрипта
      **/
-    function onLoadHandler() {
+    function onLoadHandler(arg) {
+        var src;
+        if(typeof arg == 'string'){
+            src = arg;
+        }else{
+            src = arg.target.getAttribute('src');
+        }
+
+        checkReadyItemInHandlersQueue(src);
+
         countOfLoad--;
         if (countOfLoad === 0) {
             // Все подключенные скрипты загружены
             loadState = true;
             onLoadAction();
+        }
+    }
+
+    function prepareLoadingScriptList(scriptsList, handler){
+        var newScriptsQuery = {
+            handler: handler,
+            length: scriptsList.length
+        };
+        for(var i = 0, ii = scriptsList.length; i < ii; i++){
+            newScriptsQuery[scriptsList[i]] = true;
+            if(requestedScripts[scriptsList[i]] === undefined){
+                requestedScripts[scriptsList[i]] = 'register';
+            }
+        }
+
+        handlersQueue.push(newScriptsQuery);
+    }
+
+    function checkReadyItemInHandlersQueue(itemSrc){
+        var it;
+        for(var i = 0, ii = handlersQueue.length; i < ii; i++){
+            it = handlersQueue[i];
+            if(it[itemSrc]){
+                requestedScripts[itemSrc] = 'ready';
+                it.length--;
+
+                if(it.length == 0){
+                    if(handlersQueue[i].handler){
+                        handlersQueue[i].handler();
+                    }
+                    handlersQueue.splice(i, 1);
+                    i--;
+                    ii--;
+                }
+            }
         }
     }
 
@@ -134,43 +155,26 @@
          * Добавляет список скриптов в загрузчик и
          * инициирует его загрузку.
          * @param scriptList Список скриптов для загрузки
+         * @param handler Обработчик завершения загрузки указанных скриптов
          **/
-        this.addForLoad = function (scriptsList) {
+        this.addForLoad = function (scriptsList, handler) {
             loadState = false;      // Обнуляем статус загрузки
-            scripts = scripts.concat(scriptsList);
+            prepareLoadingScriptList(scriptsList, handler);
+            scriptsQueue = scriptsQueue.concat(scriptsList);
             startLoad();
             return this;
         };
 
         /**
-         * Алиас метода загрузки скриптов
+         * Осуществляет подключения css-файла на страницу.
+         * @param src путь к css-файлу
          **/
-        this.scripts = this.addForLoad;
-
-        /**
-         * Добавляет список стилей в загрузчик и
-         * инициирует его загрузку.
-         * @param scriptList Список скриптов для загрузки
-         **/
-        this.styles = function (styleList) {
-            loadState = false;
-            styles = styles.concat(styleList);
-            startLoadStyles();
-            return this;
-        };
-
-        /**
-         * Метод будет запущен по окончанию загрузки
-         * списка скриптов
-         * @param callback Обработчик события загрузки списка скриптов
-         **/
-        this.afterLoad = function (callback) {
-            onLoadAction = callback;
-            // Если скрипты уже были загружены - инициируем afterLoad-обработчик
-            if (loadState === true) {
-                onLoadAction();
-            }
-            return this;
+        this.addStyleForLoad = function(src){
+            var link = document.createElement("link");
+            link.type = "text/css";
+            link.rel = "stylesheet";
+            link.href = src;
+            document.getElementsByTagName("head")[0].appendChild(link);
         };
 
         return this;
